@@ -24,6 +24,13 @@ export const publicReturnLimiter = rateLimit({
   message: { error: "Muitas tentativas. Aguarde alguns minutos e tente novamente." },
 });
 
+export const publicLookupLimiter = rateLimit({
+  ...base,
+  windowMs: 10 * 60 * 1000,
+  limit: 20,
+  message: { error: "Muitas consultas. Aguarde alguns minutos e tente novamente." },
+});
+
 export const publicReadLimiter = rateLimit({
   ...base,
   windowMs: 60 * 1000,

@@ -7,7 +7,7 @@ import { env } from "../config/env";
 import { conflict, notFound } from "../lib/errors";
 import { applyMovement } from "../lib/stock";
 import { nextProtocol, dayStamp } from "../lib/protocol";
-import { publicReadLimiter, publicReturnLimiter, publicWithdrawLimiter } from "../middleware/rateLimit";
+import { publicLookupLimiter, publicReadLimiter, publicReturnLimiter, publicWithdrawLimiter } from "../middleware/rateLimit";
 
 export const publicRouter = Router();
 
@@ -134,5 +134,36 @@ publicRouter.post(
       data: { withdrawalItemId: target.id, quantity, declaredCondition: body.damaged ? "DEVOLVIDO_COM_AVARIA" : "DEVOLVIDO_BOM_ESTADO", note: body.note, requesterIpHash },
     });
     res.status(201).json({ data: { protocol: w.protocol, itemName: target.item.name, unit: target.item.unit, quantity, damaged: body.damaged } });
+  }),
+);
+
+// Preenche o protocolo a partir do nome. Só responde para nome COMPLETO (nome + sobrenome),
+// devolve o mínimo (protocolo, item, data) e sempre 200 — sem distinguir "nome inexistente" de "sem pendências".
+publicRouter.get(
+  "/returns/lookup",
+  publicLookupLimiter,
+  wrap(async (req, res) => {
+    const name = typeof req.query.name === "string" ? norm(req.query.name.slice(0, 120)) : "";
+    const words = name.split(" ").filter((w) => w.length >= 2);
+    if (words.length < 2 || name.length < 6) return res.json({ data: [] });
+
+    const open = await prisma.withdrawal.findMany({
+      where: { status: "AGUARDANDO_DEVOLUCAO" },
+      orderBy: { withdrawnAt: "desc" },
+      take: 1000,
+      select: { protocol: true, personName: true, withdrawnAt: true, items: { where: { requiresReturn: true }, select: { quantity: true, returnedQuantity: true, item: { select: { name: true, unit: true } }, claims: { where: { status: "PENDENTE" }, select: { id: true } } } } },
+    });
+    const data = open
+      .filter((w) => norm(w.personName) === name)
+      .flatMap((w) => w.items.filter((i) => i.quantity - i.returnedQuantity > 0).map((i) => ({
+        protocol: w.protocol,
+        itemName: i.item.name,
+        unit: i.item.unit,
+        outstanding: i.quantity - i.returnedQuantity,
+        withdrawnAt: w.withdrawnAt,
+        alreadyClaimed: i.claims.length > 0,
+      })))
+      .slice(0, 5);
+    res.json({ data });
   }),
 );
