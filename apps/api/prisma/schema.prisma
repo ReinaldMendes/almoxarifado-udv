@@ -1,0 +1,230 @@
+// Almoxarifado UDV – DAV Ponta Grossa
+generator client {
+  provider   = "prisma-client-js"
+  engineType = "client"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  GESTOR
+  CONSULTA
+}
+
+enum MovementType {
+  ENTRADA
+  SAIDA
+  DEVOLUCAO
+  AJUSTE
+  PERDA
+  AVARIA
+}
+
+enum WithdrawalStatus {
+  RETIRADO
+  AGUARDANDO_DEVOLUCAO
+  DEVOLVIDO
+  PENDENTE
+  CANCELADO
+  EXTRAVIADO
+  DANIFICADO
+  COBRANCA
+}
+
+enum ChargeStatus {
+  SEM_COBRANCA
+  PENDENTE_DE_COBRANCA
+  COBRANCA_REALIZADA
+  REGULARIZADO
+}
+
+enum ReturnCondition {
+  DEVOLVIDO_BOM_ESTADO
+  DEVOLVIDO_COM_AVARIA
+  NAO_DEVOLVIDO
+  DEVOLVIDO_PARCIALMENTE
+}
+
+enum AuditAction {
+  LOGIN
+  CRIAR_ITEM
+  EDITAR_ITEM
+  DESATIVAR_ITEM
+  ENTRADA_ESTOQUE
+  AJUSTE_ESTOQUE
+  REGISTRAR_DEVOLUCAO
+  ALTERAR_STATUS
+  CRIAR_USUARIO
+  EDITAR_USUARIO
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  active       Boolean   @default(true)
+  role         Role      @default(CONSULTA)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  lastLoginAt  DateTime?
+
+  movements   StockMovement[]
+  returns     Return[]
+  auditLogs   AuditLog[]
+  chargesDone Withdrawal[]    @relation("ChargeResponsible")
+
+  @@index([active])
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items Item[]
+}
+
+model Item {
+  id                 String   @id @default(cuid())
+  code               String   @unique
+  name               String
+  description        String?
+  categoryId         String
+  unit               String   @default("UN") // UN, CX, PCT, KG, L, M, PAR
+  currentStock       Int      @default(0)
+  minStock           Int      @default(0)
+  location           String?
+  active             Boolean  @default(true)
+  allowPublicWithdraw Boolean @default(true)
+  requiresReturn     Boolean  @default(false)
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  category        Category         @relation(fields: [categoryId], references: [id])
+  movements       StockMovement[]
+  withdrawalItems WithdrawalItem[]
+
+  @@index([categoryId])
+  @@index([active, allowPublicWithdraw])
+  @@index([name])
+}
+
+model StockMovement {
+  id            String       @id @default(cuid())
+  itemId        String
+  type          MovementType
+  quantity      Int // sempre positivo; o sentido é dado pelo tipo
+  previousStock Int
+  newStock      Int
+  userId        String? // nulo quando a origem é a retirada pública
+  personName    String? // pessoa envolvida (retirada pública)
+  origin        String?
+  reference     String?
+  note          String?
+  protocol      String? // RET-… / ENT-…
+  withdrawalId  String?
+  createdAt     DateTime     @default(now())
+
+  item       Item        @relation(fields: [itemId], references: [id])
+  user       User?       @relation(fields: [userId], references: [id])
+  withdrawal Withdrawal? @relation(fields: [withdrawalId], references: [id])
+
+  @@index([itemId])
+  @@index([userId])
+  @@index([withdrawalId])
+  @@index([type])
+  @@index([createdAt])
+  @@index([protocol])
+}
+
+model Withdrawal {
+  id                  String           @id @default(cuid())
+  protocol            String           @unique
+  personName          String
+  withdrawnAt         DateTime // data informada da retirada
+  status              WithdrawalStatus @default(RETIRADO)
+  notes               String?
+  adminNotes          String?
+  requesterIpHash     String? // hash com sal; nunca o IP em claro
+  chargeStatus        ChargeStatus     @default(SEM_COBRANCA)
+  chargeAmount        Decimal?         @db.Decimal(10, 2)
+  chargeDate          DateTime?
+  chargeNote          String?
+  chargeResponsibleId String?
+  createdAt           DateTime         @default(now())
+  updatedAt           DateTime         @updatedAt
+
+  chargeResponsible User?            @relation("ChargeResponsible", fields: [chargeResponsibleId], references: [id])
+  items             WithdrawalItem[]
+  movements         StockMovement[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([personName])
+  @@index([chargeStatus])
+}
+
+model WithdrawalItem {
+  id               String   @id @default(cuid())
+  withdrawalId     String
+  itemId           String
+  quantity         Int
+  returnedQuantity Int      @default(0)
+  requiresReturn   Boolean  @default(false) // snapshot do item no momento da retirada
+  createdAt        DateTime @default(now())
+
+  withdrawal Withdrawal @relation(fields: [withdrawalId], references: [id])
+  item       Item       @relation(fields: [itemId], references: [id])
+  returns    Return[]
+
+  @@index([withdrawalId])
+  @@index([itemId])
+}
+
+model Return {
+  id               String          @id @default(cuid())
+  withdrawalItemId String
+  quantity         Int
+  condition        ReturnCondition
+  returnedAt       DateTime
+  note             String?
+  userId           String
+  createdAt        DateTime        @default(now())
+
+  withdrawalItem WithdrawalItem @relation(fields: [withdrawalItemId], references: [id])
+  user           User           @relation(fields: [userId], references: [id])
+
+  @@index([withdrawalItemId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model AuditLog {
+  id        String      @id @default(cuid())
+  userId    String?
+  action    AuditAction
+  entity    String?
+  entityId  String?
+  data      Json?
+  createdAt DateTime    @default(now())
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+// Contador atômico por prefixo+dia para gerar protocolos RET-/ENT- sem colisão.
+model ProtocolCounter {
+  key   String @id // ex.: RET-20260930
+  value Int    @default(0)
+}
