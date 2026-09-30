@@ -23,3 +23,19 @@ export async function nextProtocol(tx: Tx, prefix: "RET" | "ENT"): Promise<strin
   const value = rows[0]?.value ?? 1;
   return `${key}-${pad(value, 4)}`;
 }
+
+/**
+ * Código sequencial do item (ITM-0001…). Contador atômico; se o código já existir
+ * (ex.: item antigo cadastrado à mão) pula para o próximo. A constraint UNIQUE continua como garantia final.
+ */
+export async function nextItemCode(tx: Tx): Promise<string> {
+  for (let i = 0; i < 20; i++) {
+    const rows = await tx.$queryRaw<{ value: number }[]>`
+      INSERT INTO "ProtocolCounter" ("key", "value") VALUES ('ITM', 1)
+      ON CONFLICT ("key") DO UPDATE SET "value" = "ProtocolCounter"."value" + 1
+      RETURNING "value"`;
+    const code = `ITM-${pad(rows[0]?.value ?? 1, 4)}`;
+    if (!(await tx.item.findUnique({ where: { code }, select: { id: true } }))) return code;
+  }
+  throw new Error("Não foi possível gerar o código do item.");
+}

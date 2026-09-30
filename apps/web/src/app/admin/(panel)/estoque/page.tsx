@@ -8,8 +8,8 @@ import type { Category, Item, Paged } from "@/lib/types";
 import { useCanWrite } from "@/components/admin-shell";
 import { Badge, DataTable, EmptyState, ErrorBox, Field, Modal, PageHeader, Pagination, Spinner, Toggle, useDebounced, useToast } from "@/components/ui";
 
-type ItemForm = { code: string; name: string; description: string; categoryId: string; unit: string; minStock: string; location: string; active: boolean; allowPublicWithdraw: boolean; requiresReturn: boolean; notes: string; initialStock: string };
-const empty: ItemForm = { code: "", name: "", description: "", categoryId: "", unit: "UN", minStock: "0", location: "", active: true, allowPublicWithdraw: true, requiresReturn: false, notes: "", initialStock: "0" };
+type ItemForm = { name: string; description: string; categoryId: string; unit: string; minStock: string; location: string; active: boolean; allowPublicWithdraw: boolean; requiresReturn: boolean; notes: string; initialStock: string };
+const empty: ItemForm = { name: "", description: "", categoryId: "", unit: "UN", minStock: "0", location: "", active: true, allowPublicWithdraw: true, requiresReturn: false, notes: "", initialStock: "0" };
 
 function EstoqueInner() {
   const canWrite = useCanWrite();
@@ -78,7 +78,7 @@ function EstoqueInner() {
 export default function EstoquePage() { return <Suspense><EstoqueInner /></Suspense>; }
 
 function ItemModal({ item, cats, onClose, onDone }: { item: Item | null; cats: Category[]; onClose: () => void; onDone: (m: string) => void }) {
-  const [f, setF] = useState<ItemForm>(item ? { code: item.code, name: item.name, description: item.description ?? "", categoryId: item.categoryId, unit: item.unit, minStock: String(item.minStock), location: item.location ?? "", active: item.active, allowPublicWithdraw: item.allowPublicWithdraw, requiresReturn: item.requiresReturn, notes: item.notes ?? "", initialStock: "0" } : { ...empty, categoryId: cats[0]?.id ?? "" });
+  const [f, setF] = useState<ItemForm>(item ? { name: item.name, description: item.description ?? "", categoryId: item.categoryId, unit: item.unit, minStock: String(item.minStock), location: item.location ?? "", active: item.active, allowPublicWithdraw: item.allowPublicWithdraw, requiresReturn: item.requiresReturn, notes: item.notes ?? "", initialStock: "0" } : { ...empty, categoryId: cats[0]?.id ?? "" });
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const set = <K extends keyof ItemForm>(k: K, v: ItemForm[K]) => setF((s) => ({ ...s, [k]: v }));
 
@@ -95,7 +95,9 @@ function ItemModal({ item, cats, onClose, onDone }: { item: Item | null; cats: C
     <Modal open onClose={onClose} title={item ? "Editar item" : "Novo item"} wide footer={<><button className="btn-secondary" onClick={onClose}>Cancelar</button><button className="btn-primary" onClick={save} disabled={busy}>{busy && <Spinner />}Salvar</button></>}>
       <div className="grid gap-4 sm:grid-cols-2">
         {err && <div className="sm:col-span-2"><ErrorBox message={err} /></div>}
-        <Field label="Código"><input className="input" value={f.code} onChange={(e) => set("code", e.target.value)} placeholder="Ex.: ESP-001" /></Field>
+        <Field label="Código" hint={item ? "Gerado pelo sistema e não pode ser alterado." : "Será gerado automaticamente ao salvar (ex.: ITM-0001)."}>
+          <input className="input bg-slate-100 font-mono text-slate-500" value={item ? item.code : "Automático"} readOnly disabled />
+        </Field>
         <Field label="Nome"><input className="input" value={f.name} onChange={(e) => set("name", e.target.value)} /></Field>
         <Field label="Categoria"><select className="input" value={f.categoryId} onChange={(e) => set("categoryId", e.target.value)}><option value="">Selecione…</option>{cats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></Field>
         <Field label="Unidade de medida"><select className="input" value={f.unit} onChange={(e) => set("unit", e.target.value)}>{UNITS.map((u) => <option key={u}>{u}</option>)}</select></Field>

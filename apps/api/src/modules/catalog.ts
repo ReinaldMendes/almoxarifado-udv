@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma";
 import { audit } from "../lib/audit";
 import { conflict, notFound } from "../lib/errors";
 import { applyMovement } from "../lib/stock";
+import { nextItemCode } from "../lib/protocol";
 import { canWrite, me } from "../middleware/auth";
 
 export const UNITS = ["UN", "CX", "PCT", "KG", "L", "M", "PAR"] as const;
@@ -76,7 +77,6 @@ const optionalText = (max: number) =>
     .transform((v) => (v ? v : null));
 
 const itemBase = z.object({
-  code: z.string().trim().toUpperCase().min(1, "Informe o código").max(30),
   name: z.string().trim().min(2, "Informe o nome do item").max(120),
   description: optionalText(500),
   categoryId: z.string().min(1, "Selecione a categoria"),
@@ -89,6 +89,7 @@ const itemBase = z.object({
   notes: optionalText(1000),
 });
 
+// O código (ITM-0001) é gerado no servidor e é imutável: não faz parte dos schemas de entrada.
 // estoque inicial só existe na criação e gera uma movimentação ENTRADA (nunca edição direta)
 const createItemSchema = itemBase.extend({ initialStock: z.coerce.number().int().min(0).default(0) });
 const updateItemSchema = itemBase.partial();
@@ -140,7 +141,8 @@ itemsRouter.post(
     try {
       const data = await prisma.$transaction(async (tx) => {
         if (!(await tx.category.findUnique({ where: { id: body.categoryId } }))) throw notFound("Categoria não encontrada.");
-        const item = await tx.item.create({ data: body });
+        const code = await nextItemCode(tx); // gerado pelo sistema; o cliente não escolhe
+        const item = await tx.item.create({ data: { ...body, code } });
         if (initialStock > 0) {
           await applyMovement(tx, {
             itemId: item.id,
