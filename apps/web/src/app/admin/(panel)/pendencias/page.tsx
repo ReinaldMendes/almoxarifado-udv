@@ -8,7 +8,7 @@ import type { Paged, Withdrawal } from "@/lib/types";
 import { WithdrawalModal } from "@/components/withdrawal-modal";
 import { Badge, DataTable, EmptyState, ErrorBox, PageHeader, Pagination } from "@/components/ui";
 
-const KINDS = [["todas", "Todas"], ["aguardando", "Aguardando devolução"], ["atrasadas", "Atrasadas"], ["nao_devolvidas", "Não devolvidas"], ["danificadas", "Danificadas"], ["cobranca", "Cobrança"]] as const;
+const KINDS = [["todas", "Todas"], ["conferir", "Conferir devolução"], ["aguardando", "Aguardando devolução"], ["atrasadas", "Atrasadas"], ["nao_devolvidas", "Não devolvidas"], ["danificadas", "Danificadas"], ["cobranca", "Cobrança"]] as const;
 
 function Inner() {
   const params = useSearchParams();
@@ -36,7 +36,7 @@ function Inner() {
             { header: "Item", cell: (r) => r.items.map((i) => `${i.item.name} (${i.outstanding ?? i.quantity} pend.)`).join(", ") },
             { header: "Retirada", cell: (r) => fmtDate(r.withdrawnAt) },
             { header: "Protocolo", cell: (r) => <span className="font-mono text-xs">{r.protocol}</span>, hideOnMobile: true },
-            { header: "Status", cell: (r) => <div className="flex flex-wrap gap-1"><Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>{r.overdue && <Badge tone="red">Atrasada</Badge>}{r.chargeStatus === "PENDENTE_DE_COBRANCA" && <Badge tone="yellow">{CHARGE_LABEL[r.chargeStatus]}</Badge>}</div> },
+            { header: "Status", cell: (r) => <div className="flex flex-wrap gap-1"><Badge tone={STATUS_TONE[r.status]}>{STATUS_LABEL[r.status]}</Badge>{r.hasClaim && <Badge tone="blue">Devolução informada</Badge>}{r.overdue && <Badge tone="red">Atrasada</Badge>}{r.chargeStatus === "PENDENTE_DE_COBRANCA" && <Badge tone="yellow">{CHARGE_LABEL[r.chargeStatus]}</Badge>}</div> },
           ]} />
         {res && <Pagination page={res.page} pageSize={res.pageSize} total={res.total} onPage={setPage} />}
       </div>

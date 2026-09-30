@@ -49,6 +49,12 @@ enum ReturnCondition {
   DEVOLVIDO_PARCIALMENTE
 }
 
+enum ClaimStatus {
+  PENDENTE
+  CONFIRMADA
+  RECUSADA
+}
+
 enum AuditAction {
   LOGIN
   CRIAR_ITEM
@@ -77,6 +83,7 @@ model User {
   returns     Return[]
   auditLogs   AuditLog[]
   chargesDone Withdrawal[]    @relation("ChargeResponsible")
+  reviewedClaims ReturnClaim[]
 
   @@index([active])
 }
@@ -184,6 +191,7 @@ model WithdrawalItem {
   withdrawal Withdrawal @relation(fields: [withdrawalId], references: [id])
   item       Item       @relation(fields: [itemId], references: [id])
   returns    Return[]
+  claims     ReturnClaim[]
 
   @@index([withdrawalId])
   @@index([itemId])
@@ -204,6 +212,29 @@ model Return {
 
   @@index([withdrawalItemId])
   @@index([userId])
+  @@index([createdAt])
+}
+
+// Devolução INFORMADA pela pessoa (área pública). Não mexe no estoque: só vira Return
+// (e movimentação) quando a administração confirma.
+model ReturnClaim {
+  id                String          @id @default(cuid())
+  withdrawalItemId  String
+  quantity          Int
+  declaredCondition ReturnCondition
+  note              String?
+  status            ClaimStatus     @default(PENDENTE)
+  requesterIpHash   String?
+  reviewedById      String?
+  reviewedAt        DateTime?
+  reviewNote        String?
+  createdAt         DateTime        @default(now())
+
+  withdrawalItem WithdrawalItem @relation(fields: [withdrawalItemId], references: [id])
+  reviewedBy     User?          @relation(fields: [reviewedById], references: [id])
+
+  @@index([withdrawalItemId])
+  @@index([status])
   @@index([createdAt])
 }
 

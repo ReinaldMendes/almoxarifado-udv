@@ -20,7 +20,7 @@ const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Data inválida");
 const at = (d: string) => new Date(`${d}T12:00:00-03:00`);
 
 const detailInclude = {
-  items: { include: { item: { select: { id: true, code: true, name: true, unit: true } }, returns: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: "asc" as const } } } },
+  items: { include: { item: { select: { id: true, code: true, name: true, unit: true } }, returns: { include: { user: { select: { id: true, name: true } } }, orderBy: { createdAt: "asc" as const } }, claims: { where: { status: "PENDENTE" as const }, orderBy: { createdAt: "asc" as const } } } },
   chargeResponsible: { select: { id: true, name: true } },
   movements: { orderBy: { createdAt: "asc" as const }, select: { id: true, type: true, quantity: true, previousStock: true, newStock: true, createdAt: true } },
 } satisfies Prisma.WithdrawalInclude;
@@ -96,56 +96,112 @@ async function recomputeStatus(tx: Tx, withdrawalId: string, lastCondition: stri
   return anyDamaged ? "DANIFICADO" : "DEVOLVIDO";
 }
 
+interface ReturnInput { withdrawalItemId: string; quantity: number; condition: z.infer<typeof returnSchema>["condition"]; returnedAt: string; note: string | null }
+
+/** Regras de devolução (estoque + status + auditoria). Usada pelo registro direto e pela confirmação de devolução informada. */
+export async function registerReturn(tx: Tx, user: { id: string }, withdrawalId: string, body: ReturnInput) {
+  const w = await tx.withdrawal.findUnique({ where: { id: withdrawalId } });
+  if (!w) throw notFound("Retirada não encontrada.");
+  if (w.status === "CANCELADO") throw conflict("Esta retirada foi cancelada.");
+
+  // trava a linha do item retirado para não devolver duas vezes em paralelo
+  const rows = await tx.$queryRaw<{ id: string; itemId: string; quantity: number; returnedQuantity: number; requiresReturn: boolean }[]>`
+    SELECT "id", "itemId", "quantity", "returnedQuantity", "requiresReturn" FROM "WithdrawalItem"
+    WHERE "id" = ${body.withdrawalItemId} AND "withdrawalId" = ${withdrawalId} FOR UPDATE`;
+  const wi = rows[0];
+  if (!wi) throw notFound("Item da retirada não encontrado.");
+  if (!wi.requiresReturn) throw conflict("Este item não exige devolução.");
+
+  const outstanding = wi.quantity - wi.returnedQuantity;
+  if (outstanding <= 0 && body.condition !== "NAO_DEVOLVIDO") throw conflict("Este item já foi totalmente devolvido.");
+  if (body.quantity > outstanding) throw conflict(`Quantidade maior que a pendente. Restam ${outstanding} para devolver.`);
+  if (body.condition === "DEVOLVIDO_PARCIALMENTE" && body.quantity >= outstanding) {
+    throw conflict('Para devolver a quantidade total, use "Devolvido em bom estado" ou "Devolvido com avaria".');
+  }
+
+  const ref = { userId: user.id, personName: w.personName, protocol: w.protocol, withdrawalId: w.id };
+  if (body.condition === "DEVOLVIDO_BOM_ESTADO" || body.condition === "DEVOLVIDO_PARCIALMENTE") {
+    await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "DEVOLUCAO", quantity: body.quantity, origin: "Devolução", note: body.note });
+  } else if (body.condition === "DEVOLVIDO_COM_AVARIA") {
+    // volta ao almoxarifado, mas não fica disponível: o rastro registra as duas etapas
+    await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "DEVOLUCAO", quantity: body.quantity, origin: "Devolução com avaria", note: body.note });
+    await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "AVARIA", quantity: body.quantity, origin: "Avaria na devolução", note: body.note });
+  }
+
+  const ret = await tx.return.create({
+    data: { withdrawalItemId: wi.id, quantity: body.quantity, condition: body.condition, returnedAt: at(body.returnedAt), note: body.note, userId: user.id },
+  });
+  if (body.condition !== "NAO_DEVOLVIDO") {
+    await tx.withdrawalItem.update({ where: { id: wi.id }, data: { returnedQuantity: { increment: body.quantity } } });
+  }
+
+  const newStatus = await recomputeStatus(tx, w.id, body.condition);
+  await tx.withdrawal.update({ where: { id: w.id }, data: { status: newStatus } });
+  await audit(tx, { userId: user.id, action: "REGISTRAR_DEVOLUCAO", entity: "Withdrawal", entityId: w.id, data: { protocol: w.protocol, condition: body.condition, quantity: body.quantity, status: newStatus } });
+  return { return: ret, status: newStatus };
+}
+
 withdrawalsRouter.post(
   "/:id/returns",
   canWrite,
   wrap(async (req, res) => {
     const user = me(req);
-    const withdrawalId = String(req.params.id);
     const body = parse(returnSchema, req.body);
-
-    const data = await prisma.$transaction(async (tx) => {
-      const w = await tx.withdrawal.findUnique({ where: { id: withdrawalId } });
-      if (!w) throw notFound("Retirada não encontrada.");
-      if (w.status === "CANCELADO") throw conflict("Esta retirada foi cancelada.");
-
-      // trava a linha do item retirado para não devolver duas vezes em paralelo
-      const rows = await tx.$queryRaw<{ id: string; itemId: string; quantity: number; returnedQuantity: number; requiresReturn: boolean }[]>`
-        SELECT "id", "itemId", "quantity", "returnedQuantity", "requiresReturn" FROM "WithdrawalItem"
-        WHERE "id" = ${body.withdrawalItemId} AND "withdrawalId" = ${withdrawalId} FOR UPDATE`;
-      const wi = rows[0];
-      if (!wi) throw notFound("Item da retirada não encontrado.");
-      if (!wi.requiresReturn) throw conflict("Este item não exige devolução.");
-
-      const outstanding = wi.quantity - wi.returnedQuantity;
-      if (outstanding <= 0 && body.condition !== "NAO_DEVOLVIDO") throw conflict("Este item já foi totalmente devolvido.");
-      if (body.quantity > outstanding) throw conflict(`Quantidade maior que a pendente. Restam ${outstanding} para devolver.`);
-      if (body.condition === "DEVOLVIDO_PARCIALMENTE" && body.quantity >= outstanding) {
-        throw conflict('Para devolver a quantidade total, use "Devolvido em bom estado" ou "Devolvido com avaria".');
-      }
-
-      const ref = { userId: user.id, personName: w.personName, protocol: w.protocol, withdrawalId: w.id };
-      if (body.condition === "DEVOLVIDO_BOM_ESTADO" || body.condition === "DEVOLVIDO_PARCIALMENTE") {
-        await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "DEVOLUCAO", quantity: body.quantity, origin: "Devolução", note: body.note });
-      } else if (body.condition === "DEVOLVIDO_COM_AVARIA") {
-        // volta ao almoxarifado, mas não fica disponível: o rastro registra as duas etapas
-        await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "DEVOLUCAO", quantity: body.quantity, origin: "Devolução com avaria", note: body.note });
-        await applyMovement(tx, { ...ref, itemId: wi.itemId, type: "AVARIA", quantity: body.quantity, origin: "Avaria na devolução", note: body.note });
-      }
-
-      const ret = await tx.return.create({
-        data: { withdrawalItemId: wi.id, quantity: body.quantity, condition: body.condition, returnedAt: at(body.returnedAt), note: body.note, userId: user.id },
-      });
-      if (body.condition !== "NAO_DEVOLVIDO") {
-        await tx.withdrawalItem.update({ where: { id: wi.id }, data: { returnedQuantity: { increment: body.quantity } } });
-      }
-
-      const newStatus = await recomputeStatus(tx, w.id, body.condition);
-      await tx.withdrawal.update({ where: { id: w.id }, data: { status: newStatus } });
-      await audit(tx, { userId: user.id, action: "REGISTRAR_DEVOLUCAO", entity: "Withdrawal", entityId: w.id, data: { protocol: w.protocol, condition: body.condition, quantity: body.quantity, status: newStatus } });
-      return { return: ret, status: newStatus };
-    });
+    const data = await prisma.$transaction((tx) => registerReturn(tx, user, String(req.params.id), body));
     res.status(201).json({ data });
+  }),
+);
+
+// ---------- Devolução informada pela pessoa: conferir ----------
+const reviewSchema = z.object({
+  condition: z.enum(["DEVOLVIDO_BOM_ESTADO", "DEVOLVIDO_COM_AVARIA", "DEVOLVIDO_PARCIALMENTE"]).optional(),
+  quantity: z.coerce.number().int().min(1).optional(),
+  returnedAt: dateStr.optional(),
+  note: text(500),
+});
+
+withdrawalsRouter.post(
+  "/:id/claims/:claimId/confirm",
+  canWrite,
+  wrap(async (req, res) => {
+    const user = me(req);
+    const withdrawalId = String(req.params.id);
+    const body = parse(reviewSchema, req.body);
+    const data = await prisma.$transaction(async (tx) => {
+      const claim = await tx.returnClaim.findFirst({ where: { id: String(req.params.claimId), withdrawalItem: { withdrawalId } } });
+      if (!claim) throw notFound("Devolução informada não encontrada.");
+      // marca como confirmada de forma atômica: se outro admin já tratou, count = 0
+      const locked = await tx.returnClaim.updateMany({ where: { id: claim.id, status: "PENDENTE" }, data: { status: "CONFIRMADA", reviewedById: user.id, reviewedAt: new Date(), reviewNote: body.note } });
+      if (locked.count === 0) throw conflict("Esta devolução já foi conferida.");
+      const quantity = body.quantity ?? claim.quantity;
+      const condition = body.condition ?? (claim.declaredCondition === "DEVOLVIDO_COM_AVARIA" ? "DEVOLVIDO_COM_AVARIA" : quantity < claim.quantity ? "DEVOLVIDO_PARCIALMENTE" : "DEVOLVIDO_BOM_ESTADO");
+      return registerReturn(tx, user, withdrawalId, {
+        withdrawalItemId: claim.withdrawalItemId,
+        quantity,
+        condition,
+        returnedAt: body.returnedAt ?? new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date()),
+        note: body.note ?? claim.note,
+      });
+    });
+    res.json({ data });
+  }),
+);
+
+withdrawalsRouter.post(
+  "/:id/claims/:claimId/refuse",
+  canWrite,
+  wrap(async (req, res) => {
+    const user = me(req);
+    const withdrawalId = String(req.params.id);
+    const { note } = parse(z.object({ note: text(500) }), req.body);
+    await prisma.$transaction(async (tx) => {
+      const claim = await tx.returnClaim.findFirst({ where: { id: String(req.params.claimId), withdrawalItem: { withdrawalId } }, include: { withdrawalItem: { include: { withdrawal: true } } } });
+      if (!claim) throw notFound("Devolução informada não encontrada.");
+      const r = await tx.returnClaim.updateMany({ where: { id: claim.id, status: "PENDENTE" }, data: { status: "RECUSADA", reviewedById: user.id, reviewedAt: new Date(), reviewNote: note } });
+      if (r.count === 0) throw conflict("Esta devolução já foi conferida.");
+      await audit(tx, { userId: user.id, action: "ALTERAR_STATUS", entity: "ReturnClaim", entityId: claim.id, data: { protocol: claim.withdrawalItem.withdrawal.protocol, claim: "RECUSADA", note } });
+    });
+    res.json({ data: { ok: true } });
   }),
 );
 
@@ -246,9 +302,10 @@ pendenciesRouter.get(
     const limit = new Date(Date.now() - OVERDUE_DAYS * 24 * 3600 * 1000);
 
     const byKind: Record<string, Prisma.WithdrawalWhereInput> = {
-      todas: { OR: [{ status: { in: PENDING_STATUSES } }, { chargeStatus: "PENDENTE_DE_COBRANCA" }] },
+      todas: { OR: [{ status: { in: PENDING_STATUSES } }, { chargeStatus: "PENDENTE_DE_COBRANCA" }, { items: { some: { claims: { some: { status: "PENDENTE" } } } } }] },
       aguardando: { status: "AGUARDANDO_DEVOLUCAO" },
       atrasadas: { status: "AGUARDANDO_DEVOLUCAO", withdrawnAt: { lt: limit } },
+      conferir: { items: { some: { claims: { some: { status: "PENDENTE" } } } } },
       nao_devolvidas: { status: "EXTRAVIADO" },
       danificadas: { status: "DANIFICADO" },
       cobranca: { OR: [{ status: "COBRANCA" }, { chargeStatus: "PENDENTE_DE_COBRANCA" }] },
@@ -262,11 +319,12 @@ pendenciesRouter.get(
         orderBy: { withdrawnAt: "asc" },
         skip,
         take,
-        include: { items: { include: { item: { select: { id: true, name: true, unit: true } } } } },
+        include: { items: { include: { item: { select: { id: true, name: true, unit: true } }, claims: { where: { status: "PENDENTE" }, select: { id: true } } } } },
       }),
     ]);
     const data = rows.map((w) => ({
       ...w,
+      hasClaim: w.items.some((i) => i.claims.length > 0),
       overdue: w.status === "AGUARDANDO_DEVOLUCAO" && w.withdrawnAt < limit,
       items: w.items.map((i) => ({ ...i, outstanding: Math.max(0, i.quantity - i.returnedQuantity) })),
     }));

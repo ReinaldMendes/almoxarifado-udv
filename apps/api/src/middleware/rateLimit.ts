@@ -16,6 +16,14 @@ export const publicWithdrawLimiter = rateLimit({
   message: { error: "Muitas solicitações. Aguarde alguns minutos e tente novamente." },
 });
 
+// protocolos são sequenciais: limite baixo dificulta tentativa de adivinhação
+export const publicReturnLimiter = rateLimit({
+  ...base,
+  windowMs: 10 * 60 * 1000,
+  limit: 10,
+  message: { error: "Muitas tentativas. Aguarde alguns minutos e tente novamente." },
+});
+
 export const publicReadLimiter = rateLimit({
   ...base,
   windowMs: 60 * 1000,

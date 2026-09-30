@@ -24,6 +24,9 @@ O navegador só conversa com o domínio da Vercel. O Next repassa `/api/*` para 
 - Toda alteração grava `StockMovement` (anterior/posterior/usuário/protocolo). Não há rota de exclusão de movimentações.
 - Protocolos `RET-AAAAMMDD-XXXX` / `ENT-…` vêm de contador atômico (`ProtocolCounter`), fuso de Brasília.
 
+### Devolução informada pela pessoa
+Em `/devolucao` a pessoa informa protocolo + nome (e se veio com avaria). Isso **não altera o estoque**: cria um `ReturnClaim` pendente (alerta no dashboard e filtro "Conferir devolução" em Pendências). Só quando a administração confirma é que entra a movimentação de devolução. Erros não revelam se o protocolo existe (mesma mensagem para protocolo inexistente e nome divergente) e há limite de 10 tentativas/10 min por IP.
+
 ### Perfis
 `ADMIN` (tudo, usuários, auditoria) · `GESTOR` (estoque, retiradas, devoluções) · `CONSULTA` (somente leitura). Checado na API a cada requisição (usuário inativo perde acesso na hora).
 

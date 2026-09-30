@@ -57,6 +57,19 @@ export function WithdrawalModal({ id, onClose, onChanged }: { id: string; onClos
             ))}
           </div>
 
+          {canWrite && w.items.flatMap((i) => (i.claims ?? []).map((c) => ({ c, i }))).map(({ c, i }) => (
+            <div key={c.id} className="space-y-3 rounded-xl border border-brand-300 bg-brand-50 p-4">
+              <p className="font-semibold text-slate-800">Devolução informada pela pessoa</p>
+              <p className="text-sm text-slate-700">{c.quantity}× {i.item.name} · {c.declaredCondition === "DEVOLVIDO_COM_AVARIA" ? "com avaria" : "em bom estado"} · {fmtDateTime(c.createdAt)}{c.note && <> — “{c.note}”</>}</p>
+              <p className="text-xs text-slate-500">Confira o material. O estoque só é atualizado ao confirmar.</p>
+              <div className="flex flex-wrap gap-2">
+                <button className="btn-primary" disabled={busy} onClick={() => run(() => api(`/admin/withdrawals/${id}/claims/${c.id}/confirm`, { body: {} }), "Devolução confirmada.")}>{busy && <Spinner />}Confirmar (como informado)</button>
+                {c.declaredCondition !== "DEVOLVIDO_COM_AVARIA" && <button className="btn-secondary" disabled={busy} onClick={() => run(() => api(`/admin/withdrawals/${id}/claims/${c.id}/confirm`, { body: { condition: "DEVOLVIDO_COM_AVARIA" } }), "Devolução confirmada com avaria.")}>Confirmar com avaria</button>}
+                <button className="btn-secondary" disabled={busy} onClick={() => run(() => api(`/admin/withdrawals/${id}/claims/${c.id}/refuse`, { body: { note: "Material não recebido" } }), "Devolução recusada.")}>Recusar</button>
+              </div>
+            </div>
+          ))}
+
           {ret && (
             <div className="space-y-3 rounded-xl border border-brand-200 bg-brand-50/50 p-4">
               <p className="font-semibold text-slate-800">Registrar devolução (pendente: {ret.max})</p>

@@ -1,6 +1,7 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
+import Link from "next/link";
 import { CheckCircle2, ChevronLeft, Package, Search } from "lucide-react";
 import { api, ApiError, qs } from "@/lib/api";
 import { fmtDate, plural, todayISO } from "@/lib/format";
@@ -152,10 +153,11 @@ export default function RetiradaPage() {
             <p className="select-all font-mono text-2xl font-bold text-brand-800">{receipt.protocol}</p>
           </div>
           <p className="text-sm text-slate-600">{plural(receipt.quantity, receipt.unit)} de <b>{receipt.itemName}</b> · {fmtDate(`${receipt.withdrawnAt}T12:00:00-03:00`)}</p>
-          {receipt.requiresReturn && <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">Lembre-se de devolver este item ao almoxarifado.</p>}
+          {receipt.requiresReturn && <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">Lembre-se de devolver este item ao almoxarifado e, ao devolver, informe em <b>Devolução</b> usando este protocolo.</p>}
           <button className="btn-secondary w-full" onClick={reset}>Nova retirada</button>
         </div>
       )}
+      {step !== "review" && <Link href="/devolucao" className="mt-5 text-center text-sm font-medium text-brand-700 underline underline-offset-2">Vai devolver um material? Informe aqui</Link>}
       <p className="mt-auto pt-8 text-center text-xs text-slate-400">UDV · DAV de Ponta Grossa</p>
     </main>
   );

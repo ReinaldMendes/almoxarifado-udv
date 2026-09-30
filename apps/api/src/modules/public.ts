@@ -7,7 +7,7 @@ import { env } from "../config/env";
 import { conflict, notFound } from "../lib/errors";
 import { applyMovement } from "../lib/stock";
 import { nextProtocol, dayStamp } from "../lib/protocol";
-import { publicReadLimiter, publicWithdrawLimiter } from "../middleware/rateLimit";
+import { publicReadLimiter, publicReturnLimiter, publicWithdrawLimiter } from "../middleware/rateLimit";
 
 export const publicRouter = Router();
 
@@ -91,5 +91,48 @@ publicRouter.post(
     });
 
     res.status(201).json({ data: result });
+  }),
+);
+
+// ---------- Devolução informada pela pessoa ----------
+// NÃO altera estoque. Fica "aguardando conferência" até a administração confirmar.
+const norm = (v: string) => v.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+const NOT_FOUND_MSG = "Não encontramos uma retirada com esse protocolo e nome. Confira os dados.";
+
+const returnSchema = z.object({
+  protocol: z.string().trim().toUpperCase().regex(/^RET-\d{8}-\d{4,}$/, "Protocolo inválido. Ex.: RET-20260930-0001"),
+  personName: z.string().trim().min(3, "Informe o nome completo").max(120),
+  quantity: z.coerce.number().int().min(1, "Informe ao menos 1").max(100000).optional(),
+  damaged: z.boolean().default(false),
+  note: z.string().trim().max(300).optional().nullable().transform((v) => (v ? v : null)),
+});
+
+publicRouter.post(
+  "/returns",
+  publicReturnLimiter,
+  wrap(async (req, res) => {
+    const body = parse(returnSchema, req.body);
+    const ipRaw = req.ip ?? "";
+    const requesterIpHash = ipRaw ? createHash("sha256").update(`${env.IP_HASH_SALT}:${ipRaw}`).digest("hex") : null;
+
+    const w = await prisma.withdrawal.findUnique({
+      where: { protocol: body.protocol },
+      include: { items: { where: { requiresReturn: true }, include: { item: { select: { name: true, unit: true } }, claims: { where: { status: "PENDENTE" } } } } },
+    });
+    // mesma resposta para "protocolo inexistente" e "nome não confere": não revela dados de terceiros
+    if (!w || norm(w.personName) !== norm(body.personName) || w.status === "CANCELADO") throw notFound(NOT_FOUND_MSG);
+
+    const target = w.items.find((i) => i.quantity - i.returnedQuantity > 0);
+    if (!target) throw conflict("Esta retirada não possui itens pendentes de devolução.", "NOTHING_TO_RETURN");
+    if (target.claims.length > 0) throw conflict("Já existe uma devolução aguardando conferência para esta retirada.", "ALREADY_CLAIMED");
+
+    const outstanding = target.quantity - target.returnedQuantity;
+    const quantity = body.quantity ?? outstanding;
+    if (quantity > outstanding) throw conflict(`Quantidade maior que a pendente. Restam ${outstanding} para devolver.`, "INVALID_QUANTITY");
+
+    await prisma.returnClaim.create({
+      data: { withdrawalItemId: target.id, quantity, declaredCondition: body.damaged ? "DEVOLVIDO_COM_AVARIA" : "DEVOLVIDO_BOM_ESTADO", note: body.note, requesterIpHash },
+    });
+    res.status(201).json({ data: { protocol: w.protocol, itemName: target.item.name, unit: target.item.unit, quantity, damaged: body.damaged } });
   }),
 );
